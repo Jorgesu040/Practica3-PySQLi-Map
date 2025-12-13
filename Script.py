@@ -1,6 +1,140 @@
+import requests
+import argparse
+import sys
+
+
+def realizar_peticion(url, params):
+    """
+    Función genérica para hacer peticiones.
+    Acepta un diccionario 'params' ya construido.
+    """
+    headers = {'User-Agent': 'Mozilla/5.0'}
+    try:
+        r = requests.get(url, params=params, headers=headers, cookies=cookies, timeout=10)
+        return r.text
+    except requests.exceptions.RequestException as e:
+        print(f"\n[!] Error de conexión: {e}")
+        sys.exit(1)
+
+
+
+
+
+def check_for_sqli(target_url, param, extra_params=None):
+    """
+    Genera un error SQLi para comprobar vulnerabilidad.
+    
+    :param target_url: Target URL
+    :param param: Comma-separated vulnerable parameters
+    """
+
+    payload_error = "1'" # Payload simple para generar error SQL
+    params = extra_params.copy() if extra_params else {}
+    params[param] = payload_error
+
+    print(f"[+] Probando parámetro: {param}")
+    respuesta = realizar_peticion(target_url, params)
+    
+    # Debug: imprimir respuesta HTML
+    print("\n[DEBUG] Respuesta HTML:")
+    print("-" * 50)
+    print(respuesta)
+    print("-" * 50)
+    
+    # Buscar indicios de error SQL en la respuesta
+    errores_sql = [
+        "you have an error in your sql syntax",
+        "warning: mysql",
+        "unclosed quotation mark after the character string",
+        "quoted string not properly terminated",
+        "sql syntax",
+        "mysql_fetch",
+        "mysql_num_rows",
+        "pg_query",
+        "syntax error",
+        "mysql",
+        "unclosed quotation"
+    ]
+
+    for error in errores_sql:
+        if error.lower() in respuesta.lower():
+            print(f"  ¡VULNERABLE! Error detectado.")
+            return True
+    
+    print("  No se detectó vulnerabilidad evidente (Error Based).")
+    return False
+
+ 
+
+
+def parse_args():
+
+    man = """
+    Herramienta de Automatización SQLi - Jorge Matesanz
+    Uso:
+        python3 Script.py -u <URL_OBJETIVO> -p <PARAM_VULNERABLE> [opciones]
+        Si se quiere probar más de un parámetro hace falta ejecutar varias veces la herramienta.
+    Ejemplo:
+        python3 Script.py -u "http://testphp.vulnweb.com/artists.php" -p "artist"
+    Opciones:
+        -c, --cookies    Cookies HTTP (ej: 'PHPSESSID=abc123;user=admin;security=low')
+        -e, --extra      Parámetros extra necesarios para hacer la petición (ej: 'Submit=Submit,email=example@example.com')
+    """
+    parser = argparse.ArgumentParser(description="Herramienta de Automatización SQLi - Jorge Matesanz", epilog=man, formatter_class=argparse.RawDescriptionHelpFormatter)
+
+    # 1. Argumento Obligatorio - url
+    parser.add_argument("-u", "--url", dest="target_url", required=True, help="URL objetivo (ej: http://sitio.com/news.php)")
+
+    # 2. Argumento Obligatorio - parametro
+    parser.add_argument("-p", "--param", dest="param", required=True, help="Parámetro vulnerable separado(ej: id)")
+
+    # 3. Argumento Opcional - cookies
+    parser.add_argument("-c", "--cookies", dest="cookies", help="Cookies HTTP (ej: 'PHPSESSID=abc123;user=admin')")
+    
+    # 4. Argumento Opcional - extra parameters
+    parser.add_argument("-e", "--extra", help="Parámetros extra necesarios para hacer la petición (ej: 'Submit=Submit,security=low')")
+
+    
+    args = parser.parse_args()
+    return args
 
 def main():
-    print("Hello, World!")
+    args = parse_args()
+
+    # Configuración desde argumentos
+    target_url = args.target_url
+    vuln_param = args.param
+    
+    # Procesar parámetros extra (estáticos)
+    otros_params = {}
+    if args.extra:
+        for pair in args.extra.split(','):
+            pair = pair.strip()
+            if not pair or '=' not in pair:
+                continue
+            key, value = pair.split('=', 1)
+            otros_params[key] = value
+    
+
+
+    global cookies
+    if args.cookies:
+        # Convertir cadena de cookies en diccionario
+        cookies = {}
+        for pair in args.cookies.split(';'):
+            pair = pair.strip()
+            if not pair or '=' not in pair:
+                continue
+            key, value = pair.split('=', 1)
+            cookies[key] = value
+    else:
+        cookies = None
+
+    if check_for_sqli(target_url, vuln_param, otros_params):
+        print("\n[+] La URL es vulnerable a SQL Injection.")
+    else:
+        print("\n[-] No se detectó vulnerabilidad SQLi en la URL.")
+    
 
 if __name__ == "__main__":
     main()
